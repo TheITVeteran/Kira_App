@@ -731,6 +731,7 @@ wss.on("connection", (ws: any, req: IncomingMessage) => {
   let currentResponseId = 0; // generation ID — prevents stale TTS callbacks from leaking audio into new turns
   let visionReactionTimer: ReturnType<typeof setTimeout> | null = null;
   let isFirstVisionReaction = true;
+  let visionErrorNotified = false; // Only notify user once per vision session when reaction fails
 
   // --- Comfort Arc: timed accessory progression ---
   let comfortStage = 0; // 0=default, 1=jacket off, 2=neck headphones, 3=earbuds
@@ -1036,6 +1037,29 @@ Examples of GOOD reactions:
       }
     } catch (err) {
       console.error("[Vision Reaction] Error:", (err as Error).message);
+      // Notify user once per vision session so they know vision isn't working
+      if (!visionErrorNotified) {
+        visionErrorNotified = true;
+        const errorMsg = "Sorry, my eyes aren't working right now — but I can still hear you!";
+        safeSend(JSON.stringify({ type: "transcript", role: "ai", text: errorMsg }));
+        chatHistory.push({ role: "assistant", content: errorMsg });
+        safeSend(JSON.stringify({ type: "error", code: "vision_unavailable", message: "Vision temporarily unavailable." }));
+
+        // Speak the error message via TTS so user hears it
+        setState("speaking");
+        safeSend(JSON.stringify({ type: "state_speaking" }));
+        safeSend(JSON.stringify({ type: "tts_chunk_starts" }));
+        try {
+          await ttsSentence(errorMsg, "concerned", (chunk) => {
+            if (clientDisconnected) return;
+            safeSend(chunk);
+          });
+        } catch (ttsErr) {
+          console.error("[Vision Reaction] TTS error for error message:", ttsErr);
+        } finally {
+          safeSend(JSON.stringify({ type: "tts_chunk_ends" }));
+        }
+      }
       setState("listening");
     }
   }
@@ -1059,6 +1083,7 @@ Examples of GOOD reactions:
   function startVisionReactionTimer() {
     if (visionReactionTimer) { clearTimeout(visionReactionTimer); visionReactionTimer = null; }
     isFirstVisionReaction = true;
+    visionErrorNotified = false; // Reset for new vision session
     // Fire first reaction almost immediately to establish presence
     // Small delay to let image buffer populate with a few frames
     const initialDelay = 4000 + Math.random() * 2000; // 4-6 seconds
@@ -1083,6 +1108,22 @@ Examples of GOOD reactions:
     visionActive = false;
     isFirstVisionReaction = true;
     visionMode = "screen"; // Reset to default
+
+    // Strip image_url content from chatHistory so hasImages becomes false
+    // and future messages route back to Groq instead of OpenAI
+    let stripped = 0;
+    chatHistory.forEach((msg, i) => {
+      if (Array.isArray(msg.content)) {
+        const textParts = msg.content
+          .filter((p: any) => p.type === "text")
+          .map((p: any) => p.text);
+        chatHistory[i] = { ...msg, content: textParts.join(" ") || "[image removed]" };
+        stripped++;
+      }
+    });
+    if (stripped > 0) {
+      console.log(`[Vision] Stripped images from ${stripped} chatHistory message(s) — resuming Groq for text-only`);
+    }
     console.log("[Vision] Vision deactivated");
   }
 
@@ -2708,7 +2749,36 @@ Examples of GOOD reactions:
                   presence_penalty: 0.2,
                 }), "main EOU stream (OpenAI fallback)");
               } else {
-                throw groqErr;
+                // OpenAI vision failed — notify client, strip images, and retry via Groq
+                console.warn(`[LLM] OpenAI vision failed: ${(groqErr as Error).message}. Falling back to Groq (text-only).`);
+                safeSend(JSON.stringify({ type: "error", code: "vision_unavailable", message: "Vision temporarily unavailable — switching to text mode." }));
+
+                // Strip image content from messagesForLLM so Groq can handle them
+                const textOnlyMessages = messagesForLLM.map((m: any) => {
+                  if (Array.isArray(m.content)) {
+                    const textParts = m.content.filter((p: any) => p.type === "text").map((p: any) => p.text);
+                    return { ...m, content: textParts.join(" ") || "[image removed]" };
+                  }
+                  return m;
+                });
+
+                try {
+                  mainStream = await callLLMWithRetry(() => groq.chat.completions.create({
+                    model: GROQ_MODEL,
+                    messages: textOnlyMessages as any,
+                    tools: tools as any,
+                    tool_choice: "auto" as any,
+                    stream: true,
+                    temperature: 0.75,
+                    max_tokens: 150,
+                    frequency_penalty: 0.3,
+                    presence_penalty: 0.2,
+                  }), "main EOU stream (Groq vision fallback)");
+                } catch (groqFallbackErr) {
+                  console.error(`[LLM] Groq fallback also failed: ${(groqFallbackErr as Error).message}`);
+                  safeSend(JSON.stringify({ type: "error", code: "llm_unavailable", message: "All language models are temporarily unavailable." }));
+                  throw groqFallbackErr;
+                }
               }
             }
 
@@ -3029,7 +3099,7 @@ Examples of GOOD reactions:
             console.log(`[Latency Summary] LLM: ${llmDoneAt - llmStartAt}ms | TTS: ${ttsTotal}ms | E2E: ${e2eTotal}ms`);
 
           } catch (err) {
-            console.error("[Pipeline] ❌ OpenAI Error:", (err as Error).message);
+            console.error("[Pipeline] ❌ LLM Error:", (err as Error).message);
           } finally {
             // Always return to listening state and clean up
             safeSend(JSON.stringify({ type: "tts_chunk_ends" }));

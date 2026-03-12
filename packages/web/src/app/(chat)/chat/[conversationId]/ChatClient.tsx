@@ -745,13 +745,33 @@ export default function ChatClient() {
               Reconnecting...
             </div>
           )}
-          {error && error !== "limit_reached" && error !== "limit_reached_pro" && error !== "connection_lost" && error !== "heartbeat_timeout" && (
+          {error && error !== "limit_reached" && error !== "limit_reached_pro" && error !== "connection_lost" && error !== "heartbeat_timeout" && error !== "vision_unavailable" && error !== "llm_unavailable" && (
             <div className="mb-2 p-3 rounded relative" style={{
               background: "rgba(200,55,55,0.15)",
               border: "1px solid rgba(200,55,55,0.3)",
               color: "rgba(255,120,120,0.9)",
             }}>
               <span className="block sm:inline">{error}</span>
+            </div>
+          )}
+          {error === "vision_unavailable" && (
+            <div className="mb-2 p-3 rounded-xl relative text-center animate-fadeIn" style={{
+              background: "rgba(180,140,50,0.15)",
+              border: "1px solid rgba(180,140,50,0.3)",
+              color: "rgba(255,210,100,0.9)",
+              fontSize: 14,
+            }}>
+              👁️ Vision temporarily unavailable — switching to text mode
+            </div>
+          )}
+          {error === "llm_unavailable" && (
+            <div className="mb-2 p-3 rounded-xl relative text-center animate-fadeIn" style={{
+              background: "rgba(200,55,55,0.15)",
+              border: "1px solid rgba(200,55,55,0.3)",
+              color: "rgba(255,120,120,0.9)",
+              fontSize: 14,
+            }}>
+              ⚠️ Kira is temporarily unavailable — please try again in a moment
             </div>
           )}
           {error === "heartbeat_timeout" && (

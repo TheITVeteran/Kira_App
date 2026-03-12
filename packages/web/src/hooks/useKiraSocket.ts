@@ -1523,6 +1523,14 @@ export const useKiraSocket = (getTokenFn: (() => Promise<string | null>) | null,
                 debugLog("[WS] ⚠️ Daily limit reached.");
                 setError("limit_reached");
               }
+            } else if (msg.code === "vision_unavailable") {
+              debugLog("[WS] ⚠️ Vision temporarily unavailable.");
+              setError("vision_unavailable");
+              setTimeout(() => setError((prev) => prev === "vision_unavailable" ? null : prev), 5000);
+            } else if (msg.code === "llm_unavailable") {
+              debugLog("[WS] ❌ All LLMs unavailable.");
+              setError("llm_unavailable");
+              setTimeout(() => setError((prev) => prev === "llm_unavailable" ? null : prev), 8000);
             } else {
               debugLog("[WS] ❌ Server error:", msg.message);
               setError(msg.message);
